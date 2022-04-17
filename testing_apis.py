@@ -67,7 +67,7 @@ def add_athletes_to_collections():
             random_country = 0
 
 
-        data = {"athelete_email": random_names[random_name]+str(random_email)+"@gmail.com", "region": regions[random_num], "location": "SLS", "country": countries[random_num][random_country], "date": day+"/"+month+"/"+year, "time": hour+":"+minute, "timestamp": timestamp, "city": "City in "+countries[random_num][random_country], "isScheduled": "false"}
+        data = {"athelete_email": random_names[random_name]+str(random_email)+"@gmail.com", "region": regions[random_num], "location": "SLS", "country": countries[random_num][random_country], "date": day+"/"+month+"/"+year, "time": hour+":"+minute, "timestamp": timestamp, "city": "City in "+countries[random_num][random_country], "isScheduled": False}
         db[collection_prefix[random_num]+"-athletes"].insert_one(data).inserted_id
 
         print("Sent " + str(num_of_requests) + " requests")
