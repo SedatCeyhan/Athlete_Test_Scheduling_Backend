@@ -81,6 +81,19 @@ def create_availability():
     time_now = time_obj.now().timestamp()
     
     for athlete_availability in availabilities:
+        # FIRST CHECK IF THE AVAILABILITY FOR THAT DATE ALREADY CREATED AND ITS WITHIN 48 HOURS!
+        less_than_48 = check_availability_exists(athlete_email, athlete_availability, time_now)
+        
+        # you already have an availability and cannot change within 48 hours!
+        if less_than_48:
+            print("ALREADY SCHEDULED AND ITS WITHIN 48 HOURS!")
+            return_obj = {}
+            return_obj["status"] = "Failed to update"
+            return_obj["reason"] = "Cannot change availability within 48 hours!"
+            return make_response(jsonify(return_obj), 406)
+        
+        athlete_availability['athlete_email'] = athlete_email # ADD THE EMAIL IN THE API INSTEAD
+        
         region = athlete_availability['region']
         country = athlete_availability['country']
         location = athlete_availability['location']
@@ -138,15 +151,6 @@ def create_availability():
         # If the appointment has already been scheduled, then remove the appointment 
         # of the athlete. The appointment is always a one-to-one match with
         # athlete_email and date
-        
-        db["NA-assignments"].delete_one({ "$and": [{"athlete_email": {"$eq": athlete_email}}, 
-                        {"date": {"$eq": date}} ] })
-        db["EU-assignments"].delete_one({ "$and": [{"athlete_email": {"$eq": athlete_email}}, 
-                        {"date": {"$eq": date}} ] })
-        db["AS-assignments"].delete_one({ "$and": [{"athlete_email": {"$eq": athlete_email}}, 
-                        {"date": {"$eq": date}} ] })
-        db["AU-assignments"].delete_one({ "$and": [{"athlete_email": {"$eq": athlete_email}}, 
-                        {"date": {"$eq": date}} ] })
             
         region_code = region_to_code[region]
         
@@ -179,6 +183,42 @@ def create_availability():
         # )
 
 
+def check_availability_exists(athlete_email, athlete_availability, time_now):
+    date = athlete_availability['date']
+    timestamp_new = float(athlete_availability['timestamp'])
+    
+    # Has he scheduled in EU collection before?
+    eu_availability = list(db["EU-athletes"].find({"$and": [{"date": {"$eq": date}}, 
+                                                            {"athlete_email": {"$eq": athlete_email}}]})) 
+    if eu_availability:
+        # NOT ALLOWED TO CHANGE
+        return timestamp_new - time_now < 48 * 60 * 60
+
+
+    # Has he scheduled in NA collection before?
+    na_availability = list(db["NA-athletes"].find({"$and": [{"date": {"$eq": date}}, 
+                                                            {"athlete_email": {"$eq": athlete_email}}]})) 
+    if na_availability:
+        # NOT ALLOWED TO CHANGE
+        return timestamp_new - time_now < 48 * 60 * 60
+
+
+    # Has he scheduled in AS collection before?
+    as_availability = list(db["AS-athletes"].find({"$and": [{"date": {"$eq": date}}, 
+                                                            {"athlete_email": {"$eq": athlete_email}}]})) 
+    if as_availability:
+        # NOT ALLOWED TO CHANGE
+        return timestamp_new - time_now < 48 * 60 * 60
+
+
+    # Has he scheduled in AU collection before?
+    au_availability = list(db["AU-athletes"].find({"$and": [{"date": {"$eq": date}}, 
+                                                            {"athlete_email": {"$eq": athlete_email}}]})) 
+    if au_availability:
+        # NOT ALLOWED TO CHANGE
+        return timestamp_new - time_now < 48 * 60 * 60
+
+
 
 # FUN PART :)
 @app.route('/scheduleTesting/<continent_code>', methods=['GET'])
@@ -186,18 +226,21 @@ def schedule_testing(continent_code):
     # NA, EU, AS, AU ==> for sharding purposes only pass one for each 'schedule testing'
     # I hardcoded the region code on purpose.
     response_assignments = []
-    curr_timestamp = time.time()
+    
+    # tomorrow's date, for which the assignment is made
+    tomorrow_date = (datetime.datetime.today() + datetime.timedelta(days=1)).strftime('%d/%m/%Y')
+    
     for country in continent_to_countries[continent_code]:
         athlete_availabilities = list(db[continent_code + "-athletes"].find({"$and": [{"isScheduled": {"$eq": False}}, 
-                                                                             {"timestamp": {"$gt": curr_timestamp}},
-                                                                             {"country": {"$eq": country}}]})) 
+                                                                                {"date": {"$eq": tomorrow_date}},
+                                                                                {"country": {"$eq": country}}]})) 
         all_testers = list(db[continent_code + "-testers"].find({"country": {"$eq": country}}))
         print("ALL TESTERS ??====> " + str(all_testers))
         
-        scheduled_testings = list(db[continent_code + "-assignments"].find({"$and": [{"timestamp": {"$gt": curr_timestamp}},
-                                                                             {"country": {"$eq": country}}]})) 
+        scheduled_testings = list(db[continent_code + "-assignments"].find({"$and": [{"date": {"$eq": tomorrow_date}},
+                                                                                {"country": {"$eq": country}}]})) 
         
-        athlete_to_times = defaultdict(set)
+        athlete_to_times = defaultdict()
         booked_times_to_testers = defaultdict(set)
         athletes_emails = set()
         testers_emails = set()
@@ -217,93 +260,16 @@ def schedule_testing(continent_code):
             booked_times_to_testers[uniq_time_identifier].add(tester_email)
         
         for athlete_doc in athlete_availabilities:
+            print("ATTTHLEEETE   === > " + str(athlete_doc))
             athlete_email = athlete_doc["athlete_email"]
             date, hour = athlete_doc['date'], athlete_doc['time']
             uniq_time_identifier = date + "_" + hour
-            athlete_to_times[athlete_email].add(uniq_time_identifier)
+            athlete_to_times[athlete_email] = uniq_time_identifier
             availability_to_athlete[athlete_email + "_" + uniq_time_identifier] = athlete_doc
             athletes_emails.add(athlete_email)
         
         for athlete in athletes_emails:
-            for requested_time in athlete_to_times[athlete]:
-                testing_possibility = random.randint(0, 9)
-                if testing_possibility > 2:
-                    unavailable_testers = booked_times_to_testers[requested_time]
-                    available_testers = testers_emails - unavailable_testers
-                    print("AVAILABLE TESTERS: " + str(available_testers))
-                    if available_testers:
-                        assigned_tester = available_testers.pop()
-                        booked_times_to_testers[requested_time].add(assigned_tester) # Flag it as scheduled tester at the particular time!
-                        # the key here is ==> sedat@gmail.com_24/04/2022_17:30:00 --> there can only be one such key! Thus, no ambiguity!
-                        athlete_doc = availability_to_athlete[athlete + "_" + requested_time]
-                        
-                        # The assignment is made between the athlete and the tester for that particular date/time 
-                        assignment_entry = {"athlete_email" : athlete, "tester_email" : assigned_tester, 
-                                            "country": athlete_doc["country"], "region" : athlete_doc["region"],
-                                            "date" : athlete_doc["date"], "time" : athlete_doc["time"], 
-                                            "timestamp" : athlete_doc["timestamp"], "location" : athlete_doc["location"]}
-                        
-                        response_assignments.append(assignment_entry)
-                        
-                        # Add the scheduled testing
-                        db[continent_code + "-assignments"].insert_one(assignment_entry)
-                        
-                        # Athlete on this date is scheduled so update "isScheduled" field to --> True 
-                        db[continent_code + "-athletes"].update_one({'athlete_email': athlete, 'date':athlete_doc["date"]},
-                                                                   {"$set": { 'isScheduled': True }} )
-                              
-    if response_assignments:
-        response = json.loads(dumps(response_assignments, indent=10))
-    else: response = {"scheduled_athletes" : "NONE MADE"}
-    return make_response(jsonify(response), 200)   
-    
-    
-    
-# SCHEDULE BY COUNTRY 
-@app.route('/scheduleTestingCountry/<country>', methods=['GET'])
-def schedule_testing_country(country):
-    continent_code = countries_to_continent[country]
-    response_assignments = []
-    curr_timestamp = time.time()
-    
-    athlete_availabilities = list(db[continent_code + "-athletes"].find({"$and": [{"isScheduled": {"$eq": False}}, 
-                                                                            {"timestamp": {"$gt": curr_timestamp}},
-                                                                            {"country": {"$eq": country}}]})) 
-    all_testers = list(db[continent_code + "-testers"].find({"country": {"$eq": country}}))
-    print("ALL TESTERS ??====> " + str(all_testers))
-    
-    scheduled_testings = list(db[continent_code + "-assignments"].find({"$and": [{"timestamp": {"$gt": curr_timestamp}},
-                                                                            {"country": {"$eq": country}}]})) 
-    
-    athlete_to_times = defaultdict(set)
-    booked_times_to_testers = defaultdict(set)
-    athletes_emails = set()
-    testers_emails = set()
-    availability_to_athlete = {}
-    
-    # Tester Emails added to the tester list
-    for agnt in all_testers:
-        testers_emails.add(agnt['tester_email'])
-    
-    #print("TESTERS ==> " + str(testers_emails))
-    # Keep track of every tester's already booked dates
-    # This is to prevent double booking the same tester to different athletes at the same time
-    for appointment in scheduled_testings:
-        date, hour = appointment['date'], appointment['time']
-        tester_email = appointment['tester_email']
-        uniq_time_identifier = date + "_" + hour
-        booked_times_to_testers[uniq_time_identifier].add(tester_email)
-    
-    for athlete_doc in athlete_availabilities:
-        athlete_email = athlete_doc["athlete_email"]
-        date, hour = athlete_doc['date'], athlete_doc['time']
-        uniq_time_identifier = date + "_" + hour
-        athlete_to_times[athlete_email].add(uniq_time_identifier)
-        availability_to_athlete[athlete_email + "_" + uniq_time_identifier] = athlete_doc
-        athletes_emails.add(athlete_email)
-    
-    for athlete in athletes_emails:
-        for requested_time in athlete_to_times[athlete]:
+            requested_time = athlete_to_times[athlete]
             testing_possibility = random.randint(0, 9)
             if testing_possibility > 2:
                 unavailable_testers = booked_times_to_testers[requested_time]
@@ -329,6 +295,87 @@ def schedule_testing_country(country):
                     # Athlete on this date is scheduled so update "isScheduled" field to --> True 
                     db[continent_code + "-athletes"].update_one({'athlete_email': athlete, 'date':athlete_doc["date"]},
                                                                 {"$set": { 'isScheduled': True }} )
+                                
+    if response_assignments:
+        response = json.loads(dumps(response_assignments, indent=10))
+    else: response = {"scheduled_athletes" : "NONE MADE"}
+    return make_response(jsonify(response), 200)   
+    
+    
+    
+# SCHEDULE BY COUNTRY 
+@app.route('/scheduleTestingCountry/<country>', methods=['GET'])
+def schedule_testing_country(country):
+    continent_code = countries_to_continent[country]
+    response_assignments = []
+    
+    # tomorrow's date, for which the assignment is made
+    tomorrow_date = (datetime.datetime.today() + datetime.timedelta(days=1)).strftime('%d/%m/%Y')
+    
+    athlete_availabilities = list(db[continent_code + "-athletes"].find({"$and": [{"isScheduled": {"$eq": False}}, 
+                                                                            {"date": {"$eq": tomorrow_date}},
+                                                                            {"country": {"$eq": country}}]})) 
+    all_testers = list(db[continent_code + "-testers"].find({"country": {"$eq": country}}))
+    print("ALL TESTERS ??====> " + str(all_testers))
+    
+    scheduled_testings = list(db[continent_code + "-assignments"].find({"$and": [{"date": {"$eq": tomorrow_date}},
+                                                                            {"country": {"$eq": country}}]})) 
+    
+    athlete_to_times = defaultdict()
+    booked_times_to_testers = defaultdict(set)
+    athletes_emails = set()
+    testers_emails = set()
+    availability_to_athlete = {}
+    
+    # Tester Emails added to the tester list
+    for agnt in all_testers:
+        testers_emails.add(agnt['tester_email'])
+    
+    #print("TESTERS ==> " + str(testers_emails))
+    # Keep track of every tester's already booked dates
+    # This is to prevent double booking the same tester to different athletes at the same time
+    for appointment in scheduled_testings:
+        date, hour = appointment['date'], appointment['time']
+        tester_email = appointment['tester_email']
+        uniq_time_identifier = date + "_" + hour
+        booked_times_to_testers[uniq_time_identifier].add(tester_email)
+    
+    for athlete_doc in athlete_availabilities:
+        print("ATTTHLEEETE   === > " + str(athlete_doc))
+        athlete_email = athlete_doc["athlete_email"]
+        date, hour = athlete_doc['date'], athlete_doc['time']
+        uniq_time_identifier = date + "_" + hour
+        athlete_to_times[athlete_email] = uniq_time_identifier
+        availability_to_athlete[athlete_email + "_" + uniq_time_identifier] = athlete_doc
+        athletes_emails.add(athlete_email)
+    
+    for athlete in athletes_emails:
+        requested_time = athlete_to_times[athlete]
+        testing_possibility = random.randint(0, 9)
+        if testing_possibility > 2:
+            unavailable_testers = booked_times_to_testers[requested_time]
+            available_testers = testers_emails - unavailable_testers
+            print("AVAILABLE TESTERS: " + str(available_testers))
+            if available_testers:
+                assigned_tester = available_testers.pop()
+                booked_times_to_testers[requested_time].add(assigned_tester) # Flag it as scheduled tester at the particular time!
+                # the key here is ==> sedat@gmail.com_24/04/2022_17:30:00 --> there can only be one such key! Thus, no ambiguity!
+                athlete_doc = availability_to_athlete[athlete + "_" + requested_time]
+                
+                # The assignment is made between the athlete and the tester for that particular date/time 
+                assignment_entry = {"athlete_email" : athlete, "tester_email" : assigned_tester, 
+                                    "country": athlete_doc["country"], "region" : athlete_doc["region"],
+                                    "date" : athlete_doc["date"], "time" : athlete_doc["time"], 
+                                    "timestamp" : athlete_doc["timestamp"], "location" : athlete_doc["location"]}
+                
+                response_assignments.append(assignment_entry)
+                
+                # Add the scheduled testing
+                db[continent_code + "-assignments"].insert_one(assignment_entry)
+                
+                # Athlete on this date is scheduled so update "isScheduled" field to --> True 
+                db[continent_code + "-athletes"].update_one({'athlete_email': athlete, 'date':athlete_doc["date"]},
+                                                            {"$set": { 'isScheduled': True }} )
                               
     if response_assignments:
         response = json.loads(dumps(response_assignments, indent=10))
