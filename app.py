@@ -402,6 +402,40 @@ def get_tester_schedule(tester_email):
     return make_response(jsonify(json.loads(dumps(tester_appointments, indent=10))), 200)
    
 
+# If athletes wants to see what future availabilities he gave and wants to remember them, so 
+# he can refer to them to change them if he wants to 
+@app.route('/getAthleteAvailabilities/<athlete_email>', methods=['GET'])
+def get_athlete_availabilities(athlete_email):
+    athlete_availabilities = []
+    curr_timestamp = time.time()
+    for continent_code in continent_to_countries:
+        athlete_schedule = list(db[continent_code + "-athletes"].find({"$and": [{"athlete_email": {"$eq": athlete_email}},
+                                                                                {"timestamp": {"$gt": curr_timestamp}}]}))
+        if athlete_schedule:
+            # Gotta remove the 'isScheduled' field from the dict bc athlete shouldn't see if scheduled xD
+            for availability_dict in athlete_schedule:
+                del availability_dict['isScheduled']
+            athlete_availabilities.append({continent_code : athlete_schedule})
+
+    return make_response(jsonify(json.loads(dumps(athlete_availabilities, indent=10))), 200)
+
+
+
+# For administrators to see today's schedule by region (tester - athlete assignments).
+@app.route('/getTodaySchedule', methods=['GET'])
+def get_today_schedule():
+    today_date = datetime.datetime.today().strftime('%d/%m/%Y')
+    today_schedule = []
+    for continent_code in continent_to_countries:
+        assignments_per_region = list(db[continent_code + "-assignments"].find({"date": {"$eq": today_date}}))
+        
+        if assignments_per_region:
+            today_schedule.append(assignments_per_region)
+
+    return make_response(jsonify(json.loads(dumps(today_schedule, indent=10))), 200)
+
+
+
 
 if __name__ == '__main__':
     app.run(host="127.0.0.1", port = 8080, debug=True)
